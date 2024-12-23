@@ -118,7 +118,6 @@ while true; do
 
   4) #Signals
     signal_program="./signal_handler"
-    gcc -o $signal_program signal_handler.c
     $signal_program
     ;;
 
