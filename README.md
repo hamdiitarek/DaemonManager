@@ -23,6 +23,7 @@ To install `DaemonManager` and the associated C program:
    ```bash
    git clone https://github.com/your-username/daemon-manager.git
    cd daemon-manager
+   chmod +x install.sh
    ```
 
 2. Run the `install.sh` script as root:
