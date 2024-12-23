@@ -1,7 +1,5 @@
-#!/bin/bash
-
 BASH_SCRIPT="DaemonManager"
-C_BINARY="signal_handler"
+C_SOURCE="signal_handler.c"
 INSTALL_DIR="/usr/local/bin"
 
 if [ "$EUID" -ne 0 ]; then
@@ -15,7 +13,14 @@ if [ ! -f "$BASH_SCRIPT" ]; then
 fi
 
 if [ ! -f "$C_SOURCE" ]; then
-  echo -e "/nError: source file $C_SOURCE not found."
+  echo -e "Error: source file $C_SOURCE not found."
+  exit 1
+fi
+
+C_BINARY="${C_SOURCE%.c}"
+echo "Compiling $C_SOURCE to $C_BINARY..."
+if ! gcc -o "$C_BINARY" "$C_SOURCE"; then
+  echo "Error: Compilation of $C_SOURCE failed."
   exit 1
 fi
 
