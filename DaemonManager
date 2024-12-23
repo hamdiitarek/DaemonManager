@@ -1,0 +1,138 @@
+#!/bin/bash
+
+declare -A processes # Associative array to store process IDs and log files
+log_directory="./logs"
+mkdir -p "$log_directory"
+
+echo "
+██████╗  █████╗ ███████╗███╗   ███╗ ██████╗ ███╗   ██╗                     
+██╔══██╗██╔══██╗██╔════╝████╗ ████║██╔═══██╗████╗  ██║                     
+██║  ██║███████║█████╗  ██╔████╔██║██║   ██║██╔██╗ ██║                     
+██║  ██║██╔══██║██╔══╝  ██║╚██╔╝██║██║   ██║██║╚██╗██║                     
+██████╔╝██║  ██║███████╗██║ ╚═╝ ██║╚██████╔╝██║ ╚████║                     
+╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝                     
+             ███╗   ███╗ █████╗ ███╗   ██╗ █████╗  ██████╗ ███████╗██████╗ 
+             ████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝ ██╔════╝██╔══██╗
+             ██╔████╔██║███████║██╔██╗ ██║███████║██║  ███╗█████╗  ██████╔╝
+             ██║╚██╔╝██║██╔══██║██║╚██╗██║██╔══██║██║   ██║██╔══╝  ██╔══██╗
+             ██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║  ██║
+             ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+                                                                 by Hamdi Awad 
+                                                                    21-101011"
+
+while true; do
+  echo -e "\e[0m"
+  echo -e "\nMenu:\n1. Creation\t2. Query\n3. Track\t4. Send Signals\n5. Exit\n"
+  read -p "Choose an option: " choice
+
+  case $choice in
+  1) #Creation
+    process_id=$((${#processes[@]} + 1)) #adds 1 to the length of processes
+    log_file="$log_directory/process_${process_id}.log"
+
+    setsid sh -c '
+          while true; do
+            echo "Process $process_id is running"
+            echo >&2 "Process $process_id has an error"
+            sleep 2
+          done
+        ' >"$log_file" 2>&1 &
+
+    pid=$!
+    processes[$pid]=$log_file
+    echo -e "\e[1;32m"
+    echo -e "Process $process_id created with PID $pid and log file $log_file"
+    echo -e "\e[0m"
+    ;;
+
+  2) #Query
+    echo -e "\nQuery Mode:\n1. Display info for all processes\t2. Display info for current session processes\n3. Display info for a specific process\n"
+    read -p "Choose an option: " query_choice
+
+    case $query_choice in
+    1) #Display info all processes
+      echo "All running processes:"
+      echo -e "\e[1;32m"
+      ps aux
+      echo -e "\e[0m"
+      ;;
+    2) #Display info processes in the current session
+      if [ ${#processes[@]} -gt 0 ]; then
+
+        echo -e "\e[1;32m"
+
+        echo -e "Processes in the current session:"
+
+        for pid in "${!processes[@]}"; do
+          ps aux | grep "$pid" | grep -v grep
+        done
+
+        echo -e "\e[0m"
+      else
+        echo -e "\e[1;31m"
+
+        echo "No processes currently running"
+
+        echo -e "\e[0m"
+      fi
+      ;;
+    3) #Display info for a process with PID
+      read -p "Enter process PID: " select_pid
+      echo -e "\e[1;32m"
+      if [ -n "${processes[$select_pid]}" ]; then
+        ps aux | grep "$select_pid" | grep -v grep
+        echo -e "\e[0m"
+      else
+        echo -e "\e[1;31m"
+        echo "No process with PID: $select_pid exists"
+        echo -e "\e[0m"
+      fi
+      ;;
+    *) echo "Invalid choice" ;;
+    esac
+    ;;
+
+  3) #Track
+    read -p "Enter log file name to track (e.g., process_1.log): " log_file
+    full_log_path="$log_directory/$log_file"
+
+    if [ -f "$full_log_path" ]; then
+      echo -e "\nTracking $full_log_path."
+
+      tail -f "$full_log_path" &
+      tail_pid=$!
+
+      echo -e "\nPress Enter to stop tracking!\n"
+      read
+      kill $tail_pid
+
+      echo -e "\e[1;31m"
+      echo "Stopped tracking $full_log_path"
+      echo -e "\e[0m"
+    else
+      echo -e "\e[1;31m"
+      echo "Log file doesn’t exist: $full_log_path"
+      echo -e "\e[0m"
+    fi
+    ;;
+
+  4) #Signals
+    signal_program="./signal_handler"
+    gcc -o $signal_program signal_handler.c
+    $signal_program
+    ;;
+
+  5) #Exit
+    echo -e "\e[1;31m"
+    for pid in "${!processes[@]}"; do
+      echo -e "Process with PID $pid and log file ${processes[$pid]} is killed"
+      kill -9 $pid
+    done
+    echo "Exiting the program"
+    echo -e "\e[0m"
+    exit 0
+    ;;
+
+  *) echo "Invalid option" ;;
+  esac
+done
