@@ -1,7 +1,7 @@
 #!/bin/bash
 
 BASH_SCRIPT="DaemonManager"
-C_BINARY="signal_handler"
+C_SOURCE="signal_handler"
 INSTALL_DIR="/usr/local/bin"
 
 if [ "$EUID" -ne 0 ]; then
@@ -19,13 +19,20 @@ if [ ! -f "$C_SOURCE" ]; then
   exit 1
 fi
 
+C_BINARY="${C_SOURCE%.c}"
+echo "Compiling $C_SOURCE to $C_BINARY..."
+if ! gcc -o "$C_BINARY" "$C_SOURCE"; then
+  echo "Error: Compilation of $C_SOURCE failed."
+  exit 1
+fi
+
 echo -e "\nInstalling $BASH_SCRIPT to $INSTALL_DIR..."
 
 if ! cp "$BASH_SCRIPT" "$INSTALL_DIR/"; then
   echo "Error: Failed to copy $BASH_SCRIPT to $INSTALL_DIR."
   exit 1
 fi
-chmod +x "$INSTALL_DIR/$BASH_SCRIPT"
+
 
 echo -e "\nInstalling $C_BINARY to $INSTALL_DIR..."
 
