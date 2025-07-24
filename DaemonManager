@@ -1,10 +1,120 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-declare -A processes # Associative array to store process IDs and log files
+if [ "${BASH_VERSION%%.*}" -lt 4 ]; then
+    echo "Error: This script requires Bash 4.0 or later"
+    echo "Current version: $BASH_VERSION"
+    echo "On macOS, install newer Bash with: brew install bash"
+    echo "Or use the Bash installed at: $(which bash)"
+    exit 1
+fi
+
+set -euo pipefail
+
+declare -A processes 2>/dev/null || {
+    echo "Error: Associative arrays not supported in this Bash version"
+    echo "Please use Bash 4.0 or later"
+    exit 1
+}
+declare -A process_names
+
+processes=()
+process_names=()
+
 log_directory="./logs"
+config_file="./daemon_manager.conf"
+max_processes=50
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
 mkdir -p "$log_directory"
 
-echo "
+get_process_count() {
+    local count=0
+    for pid in "${!processes[@]}"; do
+        ((count++))
+    done
+    echo $count
+}
+
+has_processes() {
+    for pid in "${!processes[@]}"; do
+        return 0 
+    done
+    return 1  
+}
+
+log_action() {
+    local action="$1"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $action" >> "$log_directory/daemon_manager.log"
+}
+
+load_config() {
+    if [[ -f "$config_file" ]]; then
+        source "$config_file"
+        log_action "Configuration loaded from $config_file"
+    else
+        cat > "$config_file" << EOF
+MAX_PROCESSES=50
+LOG_DIRECTORY="./logs"
+DEFAULT_SLEEP_INTERVAL=2
+AUTO_CLEANUP=true
+EOF
+        log_action "Default configuration created"
+    fi
+}
+
+save_state() {
+    local state_file="$log_directory/daemon_state.txt"
+    echo "# Daemon Manager State - $(date)" > "$state_file"
+    if has_processes; then
+        for pid in "${!processes[@]}"; do
+            echo "$pid:${processes[$pid]}:${process_names[$pid]:-unknown}" >> "$state_file"
+        done
+    fi
+}
+
+restore_state() {
+    local state_file="$log_directory/daemon_state.txt"
+    if [[ -f "$state_file" ]]; then
+        while IFS=':' read -r pid log_file process_name; do
+            [[ "$pid" =~ ^#.* ]] && continue  
+            if kill -0 "$pid" 2>/dev/null; then
+                processes[$pid]="$log_file"
+                process_names[$pid]="$process_name"
+            fi
+        done < "$state_file"
+        log_action "Process state restored"
+    fi
+}
+
+validate_input() {
+    local input="$1"
+    local max="$2"
+    if ! [[ "$input" =~ ^[0-9]+$ ]] || [ "$input" -lt 1 ] || [ "$input" -gt "$max" ]; then
+        return 1
+    fi
+    return 0
+}
+
+check_process_limit() {
+    local current_count=$(get_process_count)
+    if [ $current_count -ge $max_processes ]; then
+        echo -e "${RED}Error: Maximum number of processes ($max_processes) reached${NC}"
+        return 1
+    fi
+    return 0
+}
+
+display_banner() {
+    echo -e "${CYAN}"
+    cat << 'EOF'
 ██████╗  █████╗ ███████╗███╗   ███╗ ██████╗ ███╗   ██╗                     
 ██╔══██╗██╔══██╗██╔════╝████╗ ████║██╔═══██╗████╗  ██║                     
 ██║  ██║███████║█████╗  ██╔████╔██║██║   ██║██╔██╗ ██║                     
@@ -18,120 +128,579 @@ echo "
              ██║ ╚═╝ ██║██║  ██║██║ ╚████║██║  ██║╚██████╔╝███████╗██║  ██║
              ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
                                                                  by Hamdi Awad 
-                                                                    21-101011"
+EOF
+    echo -e "${NC}"
+}
 
-while true; do
-  echo -e "\e[0m"
-  echo -e "\nMenu:\n1. Creation\t2. Query\n3. Track\t4. Send Signals\n5. Exit\n"
-  read -p "Choose an option: " choice
+create_process() {
+    if ! check_process_limit; then
+        return 1
+    fi
 
-  case $choice in
-  1) #Creation
-    process_id=$((${#processes[@]} + 1)) #adds 1 to the length of processes
-    log_file="$log_directory/process_${process_id}.log"
+    echo -e "${YELLOW}Process Creation Options:${NC}"
+    echo "1. Simple counter process"
+    echo "2. Custom command process"
+    echo "3. File monitoring process"
+    read -p "Choose process type (1-3): " process_type
 
-    setsid sh -c '
-          while true; do
-            echo "Process $process_id is running"
-            echo >&2 "Process $process_id has an error"
-            sleep 2
-          done
-        ' >"$log_file" 2>&1 &
+    local process_id=$(($(get_process_count) + 1))
+    local log_file="$log_directory/process_${process_id}.log"
+    local process_name=""
+    local command=""
 
-    pid=$!
-    processes[$pid]=$log_file
-    echo -e "\e[1;32m"
-    echo -e "Process $process_id created with PID $pid and log file $log_file"
-    echo -e "\e[0m"
-    ;;
+    case $process_type in
+        1)
+            process_name="counter_$process_id"
+            command="while true; do echo \"[$(date)] Process $process_id counter: \$((++count))\"; sleep 2; done"
+            ;;
+        2)
+            read -p "Enter custom command to run: " custom_cmd
+            read -p "Enter process name: " process_name
+            command="$custom_cmd"
+            ;;
+        3)
+            read -p "Enter file/directory to monitor: " monitor_path
+            if [[ ! -e "$monitor_path" ]]; then
+                echo -e "${RED}Error: Path does not exist: $monitor_path${NC}"
+                return 1
+            fi
+            process_name="monitor_$(basename "$monitor_path")"
+            command="while true; do echo \"[$(date)] Monitoring $monitor_path - $(ls -la '$monitor_path' | wc -l) items\"; sleep 5; done"
+            ;;
+        *)
+            echo -e "${RED}Invalid option${NC}"
+            return 1
+            ;;
+    esac
 
-  2) #Query
-    echo -e "\nQuery Mode:\n1. Display info for all processes\t2. Display info for current session processes\n3. Display info for a specific process\n"
-    read -p "Choose an option: " query_choice
+    if command -v setsid &>/dev/null; then
+        setsid bash -c "$command" > "$log_file" 2>&1 &
+    else
+        nohup bash -c "$command" > "$log_file" 2>&1 &
+    fi
+    local pid=$!
+    
+    processes[$pid]="$log_file"
+    process_names[$pid]="$process_name"
+    
+    echo -e "${GREEN}✓ Process '$process_name' created with PID $pid${NC}"
+    echo -e "${BLUE}  Log file: $log_file${NC}"
+    
+    save_state
+    log_action "Created process: $process_name (PID: $pid)"
+}
+
+query_processes() {
+    echo -e "${YELLOW}Query Options:${NC}"
+    echo "1. Display all system processes"
+    echo "2. Display managed processes"
+    echo "3. Display specific process info"
+    echo "4. Display process tree"
+    echo "5. Display system resource usage"
+    read -p "Choose option (1-5): " query_choice
 
     case $query_choice in
-    1) #Display info all processes
-      echo "All running processes:"
-      echo -e "\e[1;32m"
-      ps aux
-      echo -e "\e[0m"
-      ;;
-    2) #Display info processes in the current session
-      if [ ${#processes[@]} -gt 0 ]; then
-
-        echo -e "\e[1;32m"
-
-        echo -e "Processes in the current session:"
-
-        for pid in "${!processes[@]}"; do
-          ps aux | grep "$pid" | grep -v grep
-        done
-
-        echo -e "\e[0m"
-      else
-        echo -e "\e[1;31m"
-
-        echo "No processes currently running"
-
-        echo -e "\e[0m"
-      fi
-      ;;
-    3) #Display info for a process with PID
-      read -p "Enter process PID: " select_pid
-      echo -e "\e[1;32m"
-      if [ -n "${processes[$select_pid]}" ]; then
-        ps aux | grep "$select_pid" | grep -v grep
-        echo -e "\e[0m"
-      else
-        echo -e "\e[1;31m"
-        echo "No process with PID: $select_pid exists"
-        echo -e "\e[0m"
-      fi
-      ;;
-    *) echo "Invalid choice" ;;
+        1)
+            echo -e "${GREEN}All running processes:${NC}"
+            ps aux --sort=-%cpu | head -20
+            ;;
+        2)
+            if has_processes; then
+                local process_count=$(get_process_count)
+                echo -e "${GREEN}Managed processes ($process_count total):${NC}"
+                printf "%-8s %-20s %-15s %-10s %s\n" "PID" "NAME" "STATUS" "CPU%" "LOG_FILE"
+                echo "--------------------------------------------------------------------"
+                for pid in "${!processes[@]}"; do
+                    local status="RUNNING"
+                    if ! kill -0 "$pid" 2>/dev/null; then
+                        status="STOPPED"
+                    fi
+                    local cpu_usage=$(ps -p "$pid" -o %cpu= 2>/dev/null | tr -d ' ')
+                    printf "%-8s %-20s %-15s %-10s %s\n" "$pid" "${process_names[$pid]:-unknown}" "$status" "${cpu_usage:-N/A}" "${processes[$pid]}"
+                done
+            else
+                echo -e "${RED}No managed processes currently running${NC}"
+            fi
+            ;;
+        3)
+            read -p "Enter process PID: " select_pid
+            if [[ -n "${processes[$select_pid]:-}" ]]; then
+                echo -e "${GREEN}Process details for PID $select_pid:${NC}"
+                ps -p "$select_pid" -o pid,ppid,cmd,%cpu,%mem,etime,stat 2>/dev/null || echo -e "${RED}Process not found${NC}"
+            else
+                echo -e "${RED}PID $select_pid is not managed by this tool${NC}"
+            fi
+            ;;
+        4)
+            echo -e "${GREEN}Process tree:${NC}"
+            pstree -p $$ 2>/dev/null || ps -ejH
+            ;;
+        5)
+            echo -e "${GREEN}System resource usage:${NC}"
+            echo "CPU and Memory usage:"
+            top -l 1 | head -10
+            echo -e "\nDisk usage:"
+            df -h
+            ;;
+        *)
+            echo -e "${RED}Invalid choice${NC}"
+            ;;
     esac
-    ;;
+}
 
-  3) #Track
-    read -p "Enter log file name to track (e.g., process_1.log): " log_file
-    full_log_path="$log_directory/$log_file"
-
-    if [ -f "$full_log_path" ]; then
-      echo -e "\nTracking $full_log_path."
-
-      tail -f "$full_log_path" &
-      tail_pid=$!
-
-      echo -e "\nPress Enter to stop tracking!\n"
-      read
-      kill $tail_pid
-
-      echo -e "\e[1;31m"
-      echo "Stopped tracking $full_log_path"
-      echo -e "\e[0m"
-    else
-      echo -e "\e[1;31m"
-      echo "Log file doesn’t exist: $full_log_path"
-      echo -e "\e[0m"
+track_process() {
+    if ! has_processes; then
+        echo -e "${RED}No processes to track${NC}"
+        return 1
     fi
-    ;;
 
-  4) #Signals
-    signal_program="./signal_handler"
-    $signal_program
-    ;;
-
-  5) #Exit
-    echo -e "\e[1;31m"
+    echo -e "${YELLOW}Available log files:${NC}"
+    local count=1
+    declare -a log_files
     for pid in "${!processes[@]}"; do
-      echo -e "Process with PID $pid and log file ${processes[$pid]} is killed"
-      kill -9 $pid
+        log_files[$count]="${processes[$pid]}"
+        echo "$count. ${process_names[$pid]:-unknown} (PID: $pid) - ${processes[$pid]}"
+        ((count++))
     done
-    echo "Exiting the program"
-    echo -e "\e[0m"
-    exit 0
-    ;;
 
-  *) echo "Invalid option" ;;
-  esac
-done
+    read -p "Select log file to track (1-$((count-1))): " selection
+    if ! validate_input "$selection" $((count-1)); then
+        echo -e "${RED}Invalid selection${NC}"
+        return 1
+    fi
+
+    local log_file="${log_files[$selection]}"
+    
+    if [[ -f "$log_file" ]]; then
+        echo -e "${GREEN}Tracking $log_file (Press Ctrl+C to stop)${NC}"
+        tail -f "$log_file"
+    else
+        echo -e "${RED}Log file doesn't exist: $log_file${NC}"
+    fi
+}
+
+manage_signals() {
+    local signal_program="signal_handler"
+    
+    if [[ -x "./signal_handler" ]]; then
+        ./signal_handler
+    elif command -v signal_handler &> /dev/null; then
+        signal_handler
+    else
+        echo -e "${RED}Error: signal_handler program not found${NC}"
+        echo -e "${YELLOW}Please ensure the signal_handler is compiled and available${NC}"
+        return 1
+    fi
+}
+
+cleanup_processes() {
+    local cleaned=0
+    local dead_pids=()
+    
+    for pid in "${!processes[@]}"; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo -e "${YELLOW}Cleaning up dead process: ${process_names[$pid]:-unknown} (PID: $pid)${NC}"
+            dead_pids+=("$pid")
+            ((cleaned++))
+        fi
+    done
+    
+    for pid in "${dead_pids[@]}"; do
+        unset processes["$pid"]
+        unset process_names["$pid"]
+    done
+    
+    if [ $cleaned -gt 0 ]; then
+        save_state
+        log_action "Cleaned up $cleaned dead processes"
+        echo -e "${GREEN}✓ Cleaned up $cleaned dead processes${NC}"
+    else
+        echo -e "${GREEN}No dead processes found${NC}"
+    fi
+}
+
+show_statistics() {
+    local process_count=$(get_process_count)
+    echo -e "${CYAN}=== Daemon Manager Statistics ===${NC}"
+    echo -e "${WHITE}Managed processes: $process_count${NC}"
+    echo -e "${WHITE}Log directory: $log_directory${NC}"
+    echo -e "${WHITE}Total log files: $(find "$log_directory" -name "*.log" | wc -l)${NC}"
+    echo -e "${WHITE}Configuration file: $config_file${NC}"
+    
+    if [[ -f "$log_directory/daemon_manager.log" ]]; then
+        echo -e "${WHITE}Recent activity:${NC}"
+        tail -5 "$log_directory/daemon_manager.log"
+    fi
+}
+
+export_data() {
+    local export_file="$log_directory/daemon_export_$(date +%Y%m%d_%H%M%S).json"
+    
+    echo "{" > "$export_file"
+    echo "  \"timestamp\": \"$(date -Iseconds)\"," >> "$export_file"
+    echo "  \"processes\": [" >> "$export_file"
+    
+    if has_processes; then
+        local first=true
+        for pid in "${!processes[@]}"; do
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo "," >> "$export_file"
+            fi
+            
+            echo -n "    {" >> "$export_file"
+            echo -n "\"pid\": \"$pid\", " >> "$export_file"
+            echo -n "\"name\": \"${process_names[$pid]:-unknown}\", " >> "$export_file"
+            echo -n "\"log_file\": \"${processes[$pid]}\"" >> "$export_file"
+            echo -n "}" >> "$export_file"
+        done
+    fi
+    
+    echo "" >> "$export_file"
+    echo "  ]" >> "$export_file"
+    echo "}" >> "$export_file"
+    
+    echo -e "${GREEN}✓ Process data exported to: $export_file${NC}"
+}
+
+main_menu() {
+    while true; do
+        local process_count=$(get_process_count)
+        echo -e "\n${BLUE}=== Main Menu ===${NC}"
+        echo -e "${WHITE}Active Processes: $process_count${NC}"
+        echo
+        echo "1.  Create Process"
+        echo "2.  Query Processes"
+        echo "3.  Track Process"
+        echo "4.  Send Signals"
+        echo "5.  Kill Process"
+        echo "6.  Cleanup Dead Processes"
+        echo "7.  Show Statistics"
+        echo "8.  Export Process Data"
+        echo "9.  Configuration"
+        echo "10. System Diagnostics"
+        echo "11. Exit"
+        echo
+        read -p "Choose an option (1-11): " choice
+
+        case $choice in
+            1) create_process ;;
+            2) query_processes ;;
+            3) track_process ;;
+            4) manage_signals ;;
+            5) kill_process ;;
+            6) cleanup_processes ;;
+            7) show_statistics ;;
+            8) export_data ;;
+            9) configure_tool ;;
+            10) system_diagnostics ;;
+            11) exit_program ;;
+            *) echo -e "${RED}Invalid option${NC}" ;;
+        esac
+    done
+}
+
+kill_process() {
+    if ! has_processes; then
+        echo -e "${RED}No processes to kill${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}Select process to kill:${NC}"
+    local count=1
+    declare -a pids
+    for pid in "${!processes[@]}"; do
+        pids[$count]="$pid"
+        local status="RUNNING"
+        if ! kill -0 "$pid" 2>/dev/null; then
+            status="STOPPED"
+        fi
+        echo "$count. ${process_names[$pid]:-unknown} (PID: $pid) [$status]"
+        ((count++))
+    done
+
+    read -p "Select process (1-$((count-1)), 0 to cancel): " selection
+    
+    if [[ "$selection" == "0" ]]; then
+        return 0
+    fi
+    
+    if ! validate_input "$selection" $((count-1)); then
+        echo -e "${RED}Invalid selection${NC}"
+        return 1
+    fi
+
+    local target_pid="${pids[$selection]}"
+    local process_name="${process_names[$target_pid]:-unknown}"
+    
+    echo -e "${YELLOW}Kill options:${NC}"
+    echo "1. Graceful termination (SIGTERM)"
+    echo "2. Force kill (SIGKILL)"
+    read -p "Choose option (1-2): " kill_option
+
+    case $kill_option in
+        1)
+            if kill -TERM "$target_pid" 2>/dev/null; then
+                echo -e "${GREEN}✓ Sent SIGTERM to process $process_name (PID: $target_pid)${NC}"
+            else
+                echo -e "${RED}Failed to send SIGTERM to process${NC}"
+            fi
+            ;;
+        2)
+            if kill -KILL "$target_pid" 2>/dev/null; then
+                echo -e "${GREEN}✓ Force killed process $process_name (PID: $target_pid)${NC}"
+                unset processes["$target_pid"]
+                unset process_names["$target_pid"]
+                save_state
+            else
+                echo -e "${RED}Failed to kill process${NC}"
+            fi
+            ;;
+        *)
+            echo -e "${RED}Invalid option${NC}"
+            ;;
+    esac
+    
+    log_action "Killed process: $process_name (PID: $target_pid)"
+}
+
+configure_tool() {
+    echo -e "${YELLOW}Configuration Options:${NC}"
+    echo "1. View current configuration"
+    echo "2. Set maximum processes"
+    echo "3. Change log directory"
+    echo "4. Reset to defaults"
+    read -p "Choose option (1-4): " config_choice
+
+    case $config_choice in
+        1)
+            echo -e "${GREEN}Current configuration:${NC}"
+            if [[ -f "$config_file" ]]; then
+                cat "$config_file"
+            else
+                echo "No configuration file found"
+            fi
+            ;;
+        2)
+            read -p "Enter maximum number of processes (current: $max_processes): " new_max
+            if validate_input "$new_max" 999; then
+                max_processes="$new_max"
+                echo "MAX_PROCESSES=$max_processes" >> "$config_file"
+                echo -e "${GREEN}✓ Maximum processes set to $max_processes${NC}"
+            else
+                echo -e "${RED}Invalid number${NC}"
+            fi
+            ;;
+        3)
+            read -p "Enter new log directory (current: $log_directory): " new_log_dir
+            if [[ -n "$new_log_dir" ]]; then
+                mkdir -p "$new_log_dir"
+                log_directory="$new_log_dir"
+                echo "LOG_DIRECTORY=\"$log_directory\"" >> "$config_file"
+                echo -e "${GREEN}✓ Log directory changed to $log_directory${NC}"
+            fi
+            ;;
+        4)
+            load_config
+            echo -e "${GREEN}✓ Configuration reset to defaults${NC}"
+            ;;
+        *)
+            echo -e "${RED}Invalid option${NC}"
+            ;;
+    esac
+}
+
+exit_program() {
+    echo -e "${YELLOW}Exiting Daemon Manager...${NC}"
+    
+    if has_processes; then
+        local process_count=$(get_process_count)
+        echo -e "${YELLOW}You have $process_count active processes.${NC}"
+        read -p "Kill all processes before exit? (y/N): " kill_all
+        
+        if [[ "$kill_all" =~ ^[Yy]$ ]]; then
+            echo -e "${RED}Terminating all managed processes...${NC}"
+            for pid in "${!processes[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo -e "${RED}Killing process ${process_names[$pid]:-unknown} (PID: $pid)${NC}"
+                    kill -TERM "$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+                fi
+            done
+            echo -e "${GREEN}✓ All processes terminated${NC}"
+        else
+            echo -e "${BLUE}Processes left running. Use 'ps aux | grep [process_name]' to find them later.${NC}"
+        fi
+    fi
+    
+    save_state
+    log_action "Daemon Manager exited"
+    echo -e "${GREEN}Goodbye!${NC}"
+    exit 0
+}
+
+trap 'echo -e "\n${YELLOW}Received interrupt signal...${NC}"; exit_program' INT TERM
+
+check_system_compatibility() {
+    local issues=()
+    
+    if [ "${BASH_VERSION%%.*}" -lt 4 ]; then
+        issues+=("Bash version ${BASH_VERSION} is too old (need 4.0+)")
+    fi
+    
+    local required_commands=("ps" "kill" "tail" "head" "grep" "awk" "sed")
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            issues+=("Required command '$cmd' not found")
+        fi
+    done
+    
+    if ! command -v setsid &>/dev/null && ! command -v nohup &>/dev/null; then
+        issues+=("Neither 'setsid' nor 'nohup' found - needed for process isolation")
+    fi
+    
+    if ! touch "$log_directory/.test" 2>/dev/null; then
+        issues+=("Cannot write to log directory: $log_directory")
+    else
+        rm -f "$log_directory/.test"
+    fi
+    
+    if [ ${#issues[@]} -gt 0 ]; then
+        echo -e "${RED}System compatibility issues found:${NC}"
+        for issue in "${issues[@]}"; do
+            echo -e "${RED}  ✗ $issue${NC}"
+        done
+        echo -e "${YELLOW}Please resolve these issues before continuing.${NC}"
+        return 1
+    fi
+    
+    return 0
+}
+
+show_system_info() {
+    echo -e "${BLUE}System Information:${NC}"
+    echo -e "${WHITE}  OS: $(uname -s) $(uname -r)${NC}"
+    echo -e "${WHITE}  Bash: ${BASH_VERSION}${NC}"
+    echo -e "${WHITE}  User: $(whoami)${NC}"
+    echo -e "${WHITE}  PWD: $(pwd)${NC}"
+    echo -e "${WHITE}  Log Directory: $log_directory${NC}"
+    echo
+}
+
+system_diagnostics() {
+    echo -e "${CYAN}=== System Diagnostics ===${NC}"
+    
+    show_system_info
+    
+    echo -e "${BLUE}Bash Compatibility:${NC}"
+    if [ "${BASH_VERSION%%.*}" -ge 4 ]; then
+        echo -e "${GREEN}  ✓ Bash version ${BASH_VERSION} is compatible${NC}"
+    else
+        echo -e "${RED}  ✗ Bash version ${BASH_VERSION} is too old${NC}"
+    fi
+    
+    echo -e "${BLUE}Associative Array Support:${NC}"
+    if declare -A test_array 2>/dev/null; then
+        test_array["test"]="works"
+        if [[ "${test_array["test"]}" == "works" ]]; then
+            echo -e "${GREEN}  ✓ Associative arrays are working${NC}"
+        else
+            echo -e "${RED}  ✗ Associative arrays not functioning properly${NC}"
+        fi
+        unset test_array
+    else
+        echo -e "${RED}  ✗ Associative arrays not supported${NC}"
+    fi
+    
+    echo -e "${BLUE}Required Commands:${NC}"
+    local required_commands=("ps" "kill" "tail" "head" "grep" "awk" "sed")
+    local optional_commands=("setsid" "nohup")
+    
+    for cmd in "${required_commands[@]}"; do
+        if command -v "$cmd" &>/dev/null; then
+            echo -e "${GREEN}  ✓ $cmd: $(which "$cmd")${NC}"
+        else
+            echo -e "${RED}  ✗ $cmd: not found${NC}"
+        fi
+    done
+    
+    echo -e "${BLUE}Process Isolation Commands:${NC}"
+    for cmd in "${optional_commands[@]}"; do
+        if command -v "$cmd" &>/dev/null; then
+            echo -e "${GREEN}  ✓ $cmd: $(which "$cmd")${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ $cmd: not found${NC}"
+        fi
+    done
+    
+    echo -e "${BLUE}Shell Options:${NC}"
+    echo -e "${WHITE}  Current shell: $0${NC}"
+    echo -e "${WHITE}  Script path: ${BASH_SOURCE[0]}${NC}"
+    echo -e "${WHITE}  Shell options: $-${NC}"
+    
+    echo -e "${BLUE}File Permissions:${NC}"
+    if [[ -w "$log_directory" ]]; then
+        echo -e "${GREEN}  ✓ Log directory writable: $log_directory${NC}"
+    else
+        echo -e "${RED}  ✗ Log directory not writable: $log_directory${NC}"
+    fi
+    
+    if [[ -r "$config_file" ]]; then
+        echo -e "${GREEN}  ✓ Config file readable: $config_file${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Config file not found: $config_file${NC}"
+    fi
+    
+    echo -e "${BLUE}System Resources:${NC}"
+    echo -e "${WHITE}  Available memory: $(free -h 2>/dev/null | awk '/^Mem:/ {print $7}' || echo 'N/A (macOS)')${NC}"
+    echo -e "${WHITE}  Process limit: $(ulimit -u)${NC}"
+    echo -e "${WHITE}  File descriptor limit: $(ulimit -n)${NC}"
+    
+    echo -e "${BLUE}Signal Handler:${NC}"
+    if [[ -x "./signal_handler" ]]; then
+        echo -e "${GREEN}  ✓ Signal handler found: ./signal_handler${NC}"
+    elif command -v signal_handler &>/dev/null; then
+        echo -e "${GREEN}  ✓ Signal handler found: $(which signal_handler)${NC}"
+    else
+        echo -e "${RED}  ✗ Signal handler not found${NC}"
+    fi
+    
+    echo -e "\n${BLUE}Troubleshooting Tips:${NC}"
+    echo -e "${WHITE}1. If Bash version is old, install newer Bash:${NC}"
+    echo -e "   ${CYAN}brew install bash${NC}"
+    echo -e "${WHITE}2. Make sure you're using the right Bash:${NC}"
+    echo -e "   ${CYAN}/usr/local/bin/bash $(readlink -f "$0" 2>/dev/null || echo "$0")${NC}"
+    echo -e "${WHITE}3. Check if signal_handler is compiled:${NC}"
+    echo -e "   ${CYAN}make all${NC}"
+    echo -e "${WHITE}4. For permission issues, check directory ownership:${NC}"
+    echo -e "   ${CYAN}ls -la $log_directory${NC}"
+    
+    echo
+    read -p "Press Enter to continue..."
+}
+
+main() {
+    if ! check_system_compatibility; then
+        echo -e "\n${YELLOW}To fix Bash version issues on macOS:${NC}"
+        echo -e "${WHITE}1. Install newer Bash: ${CYAN}brew install bash${NC}"
+        echo -e "${WHITE}2. Add to /etc/shells: ${CYAN}echo /usr/local/bin/bash | sudo tee -a /etc/shells${NC}"
+        echo -e "${WHITE}3. Change shell: ${CYAN}chsh -s /usr/local/bin/bash${NC}"
+        echo -e "${WHITE}4. Or run with: ${CYAN}/usr/local/bin/bash DaemonManager${NC}"
+        exit 1
+    fi
+    
+    load_config
+    restore_state
+    display_banner
+    show_system_info
+    log_action "Daemon Manager started (Bash: ${BASH_VERSION})"
+    
+    echo -e "${GREEN}✓ System compatibility check passed${NC}"
+    echo -e "${BLUE}Welcome to Daemon Manager Enhanced!${NC}"
+    
+    main_menu
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

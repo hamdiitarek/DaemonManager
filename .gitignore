@@ -1,0 +1,106 @@
+# Daemon Manager .gitignore
+
+# Log files and directories
+logs/
+*.log
+daemon_manager.log
+process_*.log
+daemon_export_*.json
+daemon_state.txt
+
+# Compiled binaries
+signal_handler
+*.o
+*.a
+*.so
+*.dylib
+
+# Configuration files with sensitive data
+daemon_manager.conf.local
+*.conf.backup
+
+# Backup files
+*~
+*.bak
+*.backup
+*.orig
+*.rej
+*.swp
+*.swo
+*.tmp
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.eclipse/
+.metadata/
+.settings/
+.project
+.cproject
+
+# Build directories
+build/
+dist/
+target/
+
+# Temporary files
+temp/
+tmp/
+.temp/
+.tmp/
+
+# Process IDs and lock files
+*.pid
+*.lock
+
+# Core dumps
+core
+core.*
+
+# Package manager files
+node_modules/
+*.tgz
+*.tar.gz
+
+# Python bytecode (if any Python scripts are added)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Documentation build files
+docs/_build/
+docs/html/
+docs/latex/
+
+# Test coverage
+coverage/
+*.coverage
+.nyc_output/
+
+# Installation artifacts
+daemon_manager_backup/
+install.log
+uninstall.log
+
+# User-specific configuration
+.daemon_manager_user_config
+user_preferences.conf
